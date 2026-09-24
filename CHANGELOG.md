@@ -7,11 +7,12 @@
 
 ### Added
 - 服务端自包含：内嵌管理 UI（admin 监听根路径 `/`）、`orbitd genconfig`（自签 CA +
-  服务端证书，纯 Go）、`install-orbitd.sh` 一键安装、公共注册 HTTPS 监听（`public_http_addr`，
+  服务端证书，纯 Go）、`install-orbitd.sh` 一键安装、公共注册 HTTPS 监听（`public.addr`，
   默认 `0.0.0.0:4431`，含 `/ca.pem` 与注册/自助 API）。
 - 开源外壳：AGPL-3.0 LICENSE、CONTRIBUTING、SECURITY、README 重写（数据面已实现）、
-  GitHub Actions（ci 单测/交叉构建 + release 装配）。
-- `bench/` 中继压测与延迟测量脚本 + `docs/benchmarks.md`。
+  GitHub Actions（ci 单测/交叉构建 + release 装配）、`bench/` 压测脚本 + `docs/benchmarks.md`。
+- 2026-09-24 公开发布公开仓 **orbit-net**（AGPL-3.0）。
+  地址：<https://github.com/shzubuntu/orbit-net>
 
 ### Changed
 - 入口拆分：注册/自助 API（device 鉴权）与 admin API 分离，admin 保持仅本机。

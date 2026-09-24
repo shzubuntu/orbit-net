@@ -1,6 +1,10 @@
 # orbit-net
 
-面向公网用户的私有网络产品（项目代号：**orbit**，公开仓名：**orbit-net**）。
+面向公网用户的私有网络产品（项目代号：**orbit**）。
+
+[![AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![ci](https://github.com/shzubuntu/orbit-net/actions/workflows/ci.yml/badge.svg)](https://github.com/shzubuntu/orbit-net/actions)
+[![go.mod](https://img.shields.io/badge/go-1.27-blue)](go.mod)
 
 一台自己的云服务器，5 分钟搭好私有组网中枢：多台设备接入同一虚拟网络、按需经
 出口节点上网——不依赖第三方服务、不开通公网端口到内网。
@@ -31,7 +35,7 @@
 ```bash
 # 拿到 orbitd.linux-amd64 后：
 sudo mkdir -p /opt/orbit && sudo cp orbitd.linux-amd64 /usr/local/bin/orbitd
-sudo bash install-orbitd.sh --ip <服务器公网IP或域名> --token <管理密码> [--web-port 4431] [--listen 28443]
+sudo bash install-orbitd.sh --ip <服务器公网IP或域名> --token <管理密码> [--web 4431] [--listen 28443]
 ```
 
 脚本会：生成 `orbitd.yaml` + 自签 CA/服务端证书（纯 Go，无 openssl 依赖）→
@@ -44,9 +48,8 @@ sudo bash install-orbitd.sh --ip <服务器公网IP或域名> --token <管理密
 ### 2. 发邀请码
 
 ```bash
-curl -X POST http://127.0.0.1:18444/api/v1/admin/invites \
-  -H 'X-Admin-Token: <管理token>' -H 'Content-Type: application/json' \
-  -d '{"n":3}'
+curl -X POST 'http://127.0.0.1:18444/api/v1/admin/invites?count=3' \
+  -H 'X-Admin-Token: <管理token>'
 ```
 
 或打开 `http://127.0.0.1:18444/`（管理 UI）里点“生成邀请码”。
@@ -88,15 +91,22 @@ curl -X POST http://127.0.0.1:18444/api/v1/admin/invites \
 - 管理（`X-Admin-Token`，仅 admin 监听）：`/api/v1/admin/{accounts,clients,usage(s),
   invites,devices,egress}` 等。内嵌 UI 见服务端根路径 `/`。
 
-## 构建与测试
+## 获取源码与构建
 
 ```bash
+git clone https://github.com/shzubuntu/orbit-net
+cd orbit-net
 go build ./...          # 全量构建（客户端依赖 wintun.dll 运行时置于可执行文件旁）
 go test ./...           # 单测（含配额/计量回归）
 go vet ./...            # 静态检查
 # 版本号构建时注入：
 go build -ldflags "-X orbit/internal/version.Version=$(git describe --tags --always)" ./cmd/orbitd
 ```
+
+- 提交规范 / 开发流程见 `CONTRIBUTING.md`；安全问题报告见 `SECURITY.md`。
+- Windows 客户端随包的 `wintun.dll` 属 WireGuard LLC 专有分发包许可，不进本仓，
+  由维护者在发版机装配（见 `deps/wintun-NOTICE.md`）。
+- 改动合入 `main` 后由 `release.yml`（tag `v*`）自动产出 `orbitd`/`orbit-cli` 多平台资产。
 
 ## 安全模型
 
@@ -120,4 +130,5 @@ AGPL-3.0（开源核心）。托管增值层（多区域中继、SLA、账单/�
 
 ## 开发者
 
-开发与部署基线见 `docs/DESIGN.md`；部署/运维细节见 `AGENTS.md`（内部使用，不进仓）。
+开发与部署基线见 `docs/DESIGN.md`；运维与部署细节见仓库内部 `AGENTS.md`（不进公开仓）。
+公开反馈/提问走 GitHub Issues：<https://github.com/shzubuntu/orbit-net/issues>。
