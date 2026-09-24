@@ -1,15 +1,18 @@
 # 构建产物
-orbitd
-orbit-cli
-orbit-cli.exe
-orbit-gui
-orbit-gui.exe
-orb
+/orbitd
+/orbit-cli
+/orbit-cli.exe
+/orbit-gui
+/orbit-gui.exe
+/orb
 *.exe
-orbit-bench
-orbitd.new
-orbitd.old
+/orbit-bench
+/orbitd.new
+/orbitd.old
 dist/
+
+# cmd/orbit-gui 暂不纳入公开/FOSS 发布
+/cmd/orbit-gui/
 
 # 运行数据 / 私钥 / 证书
 data/
