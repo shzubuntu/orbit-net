@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit 设备管理</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:#f0f2f5;margin:0;color:#222}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 16px}
+  .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.08);padding:24px;margin-bottom:20px}
+  h1{font-size:18px;margin:0 0 4px}
+  h2{font-size:15px;margin:0 0 12px}
+  .sub{color:#98a2b3;font-size:13px;margin-bottom:16px}
+  a.nav{float:right;font-size:13px;color:#1976d2;text-decoration:none;margin-left:14px;cursor:pointer}
+  button{cursor:pointer;border-radius:6px;padding:6px 10px;font-size:13px;border:1px solid #d0d5dd;background:#fff}
+  button.primary{background:#1976d2;border-color:#1976d2;color:#fff}
+  button.del{color:#d32f2f;border-color:#d32f2f}
+  button.sm{padding:3px 8px;font-size:12px;margin:0 2px}
+  select{margin-left:6px;padding:4px 6px;border:1px solid #d0d5dd;border-radius:4px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{border-bottom:1px solid #eef0f3;padding:7px 6px;text-align:left;vertical-align:top}
+  th{color:#98a2b3;font-weight:500}
+  .badge{font-size:12px;background:#eef4ff;color:#1976d2;border-radius:4px;padding:1px 6px;white-space:nowrap}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .dot.on{background:#2e7d32}.dot.off{background:#d0d5dd}
+  .quota{font-size:12px;color:#98a2b3}
+  .err{color:#d32f2f;font-size:13px;margin-top:10px}
+  .ok{color:#2e7d32;font-size:13px;margin-top:10px}
+  .mb{display:flex;gap:12px;align-items:center}
+  .mb input, .mb select{width:auto;min-width:180px}
+  .qbar{background:#eef0f3;border-radius:4px;height:6px;width:130px;overflow:hidden;margin-top:4px}
+  .qbar>i{display:block;height:100%;background:#1976d2}
+  .qbar>i.warn{background:#f59e0b}
+  .qbar>i.over{background:#d32f2f}
+  #login{max-width:420px;margin:80px auto}
+  #login input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:14px;margin:8px 0}
+</style>
+</head>
+<body>
+<div class="wrap" id="home">
+  <a class="nav" onclick="logout()">退出登录</a>
+  <a class="nav" href="#/invite" onclick="invites()">邀请码</a>
+  <div class="card"><h1>Orbit 设备管理</h1>
+    <div class="sub">账户 · 设备 · 在线状态 · 用量配额（管理面仅本机可达，凭 admin token 访问）</div>
+  </div>
+
+  <div class="card">
+    <h2>账户与设备</h2>
+    <div id="acct"></div>
+    <div id="devs"></div>
+  </div>
+
+  <div class="card">
+    <h2>在线客户端</h2>
+    <div id="clients" class="sub">加载中...</div>
+  </div>
+
+  <div class="card">
+    <h2>邀请码</h2>
+    <div class="mb">
+      <button class="primary" id="geninv" onclick="genInvites()">生成 3 个邀请码</button>
+    </div>
+    <div id="invites" class="sub">加载中...</div>
+  </div>
+
+  <div class="err" id="err"></div>
+  <div class="ok" id="ok"></div>
+</div>
+
+<div class="card" id="login" style="display:none">
+  <h1>Orbit 管理登录</h1>
+  <div class="sub">输入 orbitd.yaml 中 admin.token 的管理密码</div>
+  <input id="tok" type="password" placeholder="Admin Token" autocomplete="off">
+  <button class="primary" onclick="doLogin()">登录</button>
+  <div class="err" id="loginerr"></div>
+</div>
+
+<script>
+const $err=document.getElementById('err'),$ok=document.getElementById('ok');
+function humansize(b){ if(b<=0) return '不限'; const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<u.length-1){b/=1024;i++;} return b.toFixed(b>=100?0:1)+' '+u[i]; }
+function hs(b){ b=b||0; const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<u.length-1){b/=1024;i++;} return b.toFixed(b>=100?0:1)+' '+u[i]; }
+const TOK_KEY='orbit_admin_token';
+function getTok(){ return localStorage.getItem(TOK_KEY)||''; }
+function setTok(t){ t?localStorage.setItem(TOK_KEY,t):localStorage.removeItem(TOK_KEY); }
+
+async function api(path, method, body){
+  $err.textContent='';$ok.textContent='';
+  const r = await fetch('/api/v1/admin'+path,{method:method||'GET',
+    headers:{'Content-Type':'application/json','X-Admin-Token':getTok()},
+    body:body?JSON.stringify(body):undefined});
+  if(r.status===401){ showLogin('token 无效或已失效'); throw new Error('auth'); }
+  if(!r.ok){ const j = await r.json().catch(()=>({})); throw new Error(j.error||r.status+' '+path); }
+  return r.json();
+}
+const GB=1073741824, TB=1073741824*1024;
+
+let ACCT=[] , USR={accounts:[],devices:[]};
+async function ensureData(){
+  if(!ACCT.length) ACCT = await api('/accounts');
+  if(USR.accounts.length===0 && USR.devices.length===0) USR = await api('/usages');
+  return {ACCT,USR};
+}
+function usageBar(u,l){
+  if(l<=0) return '';
+  const p=Math.round(100*u/l), cls=p>=100?'over':(p>=80?'warn':'');
+  return '<div class="qbar"><i class="'+cls+'" style="width:'+Math.min(100,p)+'%"></i></div>';
+}
+
+async function accounts(){
+  try{
+    const {ACCT,USR}=await ensureData();
+    const um={};(USR.accounts||[]).forEach(a=>um[a.account_id]=a);
+    const box=document.getElementById('acct');
+    if(!ACCT.length){box.innerHTML='<div class="empty">暂无账户</div>';return;}
+    box.innerHTML='<table><tr><th>账户</th><th>档位</th><th>设备数</th><th>日用量 / 配额</th><th>出口用量 / 配额</th><th></th></tr>'+
+      ACCT.map(a=>{
+        const u=um[a.id]||{};
+        const used=u.used_bytes||0, lim=a.limit_bytes||0, eused=u.egress_used_bytes||0, elim=a.egress_limit_bytes||0;
+        const tiers=['free','pro','team'].map(t=>
+          '<option value="'+t+'"'+(a.tier===t?' selected':'')+'>'+t+'</option>').join('');
+        return '<tr><td><span class="badge">'+a.name+'</span><br><span class="quota">'+a.id+'</span></td>'+
+          '<td><select data-tier data-acct="'+a.id+'" onchange="setTier(this)">'+tiers+'</select></td>'+
+          '<td>'+a.devices+'</td>'+
+          '<td class="quota">'+hs(used)+' / '+humansize(lim)+usageBar(used,lim)+'</td>'+
+          '<td class="quota">'+hs(eused)+' / '+humansize(elim)+usageBar(eused,elim)+'</td>'+
+          '<td><button class="sm" onclick="addDevice(\''+a.id+'\')">加设备</button></td></tr>';
+      }).join('')+'</table>';
+    devices();
+  }catch(e){ if(e.message!=='auth') boxError('acct',e); }
+}
+async function devices(){
+  const box=document.getElementById('devs');
+  const data=await api('/devices');
+  const UM={};(USR.devices||[]).forEach(d=>UM[d.device_id]=d);
+  box.innerHTML = '<div style="margin-top:16px"><b>设备明细</b><table><tr><th>状态</th><th>设备</th><th>账户</th><th>出口</th><th>今日用量</th><th>最近在线</th><th></th></tr>'+
+    data.map(d=>{
+      const eg=d.egress_enabled?(d.egress_acl&&d.egress_acl.length?'on('+(d.egress_acl.length)+')':'on(本账户)'):'off';
+      const u=UM[d.device_id]||{};
+      const used=(u.used_bytes||0), eused=(u.egress_used_bytes||0);
+      const usedTxt=hs(used)+(eused?' <span class="quota">(出口 '+hs(eused)+')</span>':'');
+      return '<tr><td><span class="dot '+(d.online?'on':'off')+'"></span>'+(d.online?'在线':'离线')+'</td>'+
+        '<td><b>'+d.name+'</b><br><span class="quota">'+d.device_id+'</span></td>'+
+        '<td class="quota">'+d.account_id+'</td>'+
+        '<td>'+eg+'</td><td class="quota">'+usedTxt+'</td><td class="quota">'+(d.last_seen||'—')+'</td>'+
+        '<td><button class="sm del" onclick="revokeDevice(\''+d.device_id+'\',\''+d.name+'\')">吊销</button></td></tr>';
+    }).join('')+'</table></div>';
+}
+async function clients(){
+  const box=document.getElementById('clients');
+  try{
+    const data=await api('/clients');
+    const UM={};(USR.devices||[]).forEach(d=>UM[d.device_id]=d);
+    if(!data.length){box.innerHTML='<span>在线客户端 0 台</span>';return;}
+    box.innerHTML='<table><tr><th>IP</th><th>主机</th><th>系统</th><th>远程地址</th><th>在线时长</th><th>今日用量</th><th>账户</th></tr>'+
+      data.map(c=>'<tr><td><b>'+c.virtual_ip+'</b>'+(c.egress?' <span class="badge">出口</span>':'')+'</td>'+
+        '<td>'+c.hostname+'</td><td>'+c.os+'</td><td class="quota">'+c.remote_addr+'</td>'+
+        '<td class="quota">'+c.online_secs+'s</td>'+
+        '<td class="quota">'+(UM[c.device_id]?hs(UM[c.device_id].used_bytes||0):'—')+'</td>'+
+        '<td class="quota">'+c.account_id+'</td></tr>').join('')+'</table>';
+  }catch(e){ if(e.message!=='auth') box.innerHTML='<span class="err">'+e.message+'</span>'; }
+}
+async function invites(){
+  const box=document.getElementById('invites');
+  try{
+    const data=await api('/invites');
+    if(!data.length){box.innerHTML='<span>暂无邀请码</span>';return;}
+    box.innerHTML='<table><tr><th>邀请码</th><th>状态</th><th>被用账户</th><th></th></tr>'+
+      data.map(v=>{const used=!!v.account_id;
+        return '<tr><td><span class="badge">'+v.code+'</span></td>'+
+        '<td>'+(used?'已用':'<b>可用</b>')+'</td>'+
+        '<td class="quota">'+(v.account_id||'—')+'</td>'+
+        '<td>'+(used?'':'<button class="sm del" onclick="removeInvite(\''+v.code+'\')">删除</button>')+'</td></tr>';
+      }).join('')+'</table>';
+  }catch(e){ if(e.message!=='auth') box.innerHTML='<span class="err">'+e.message+'</span>'; }
+}
+function boxError(id,e){const box=document.getElementById(id);box.innerHTML='<span class="err">'+(e.message||e)+'</span>';$err.textContent='';}
+
+async function genInvites(){
+  try{
+    const data=await api('/invites?count=3','POST',{});
+    $ok.textContent='已生成 '+data.invites.join('、');
+    invites();
+  }catch(e){ if(e.message!=='auth') $err.textContent=e.message; }
+}
+async function setTier(sel){
+  try{
+    await api('/accounts/tier','POST',{account_id:sel.dataset.acct,tier:sel.value});
+    $ok.textContent='已切换档位';
+    ACCT=[];USR={accounts:[],devices:[]};
+    accounts();
+  }catch(e){ if(e.message!=='auth') $err.textContent=e.message; }
+}
+async function revokeDevice(id,name){
+  if(!confirm('吊销设备 "'+name+'" ('+id+')?\n设备将被踢下线, token 即刻失效, 不可恢复。'))return;
+  try{
+    const data=await api('/devices/revoke','POST',{device_id:id});
+    $ok.textContent='已吊销 '+id+(data.kicked?'（已踢下线）':'');
+    ACCT=[];USR={accounts:[],devices:[]};
+    accounts();
+  }catch(e){ if(e.message!=='auth') $err.textContent=e.message; }
+}
+async function addDevice(acct){
+  const name=prompt('新设备名称 (账户 '+acct+'):','device-'+Date.now().toString().slice(-4));
+  if(!name)return;
+  try{
+    const data=await api('/devices/add','POST',{account_id:acct,name});
+    $ok.textContent='已加装 '+data.device_id+'  明文token: '+data.device_token;
+    ACCT=[];USR={accounts:[],devices:[]};
+    accounts();
+  }catch(e){ if(e.message!=='auth') $err.textContent=e.message; }
+}
+async function removeInvite(code){
+  try{
+    await api('/invites/remove','POST',{code:code});
+    $ok.textContent='已删除邀请码';
+    invites();
+  }catch(e){ if(e.message!=='auth') $err.textContent=e.message; }
+}
+
+function showLogin(msg){
+  setTok('');
+  document.getElementById('home').style.display='none';
+  document.getElementById('login').style.display='block';
+  document.getElementById('loginerr').textContent=msg||'';
+}
+function doLogin(){
+  const t=document.getElementById('tok').value.trim();
+  setTok(t);
+  document.getElementById('home').style.display='block';
+  document.getElementById('login').style.display='none';
+  loadAll();
+}
+function logout(){ showLogin(''); }
+
+async function loadAll(){
+  document.getElementById('home').style.display='block';
+  document.getElementById('login').style.display='none';
+  if(!getTok()){ showLogin(''); return; }
+  [accounts, clients, invites].forEach(x=>x());
+}
+loadAll();
+</script>
+</body>
+</html>

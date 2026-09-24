@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            name: linux-amd64
+          - goos: linux
+            goarch: arm64
+            name: linux-arm64
+          - goos: windows
+            goarch: amd64
+            name: windows-amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build orbitd
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          V=${{ github.ref_name }}
+          go build -trimpath -ldflags "-s -w -X orbit/internal/version.Version=$V" -o dist/orbitd-${{ matrix.name }} ./cmd/orbitd
+          go build -trimpath -ldflags "-s -w -X orbit/internal/version.Version=$V" -o dist/orbit-cli-${{ matrix.name }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/orbit-cli
+        # 注: orbit-gui 需要桌面环境依赖,FOSS 分发版先不纳入 release 资产。
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "${{ github.ref_name }}" \
+            --notes "## Orbit ${{ github.ref_name }}
+
+### 服务器端 orbitd
+- 自带内嵌管理 Web UI(管理员 token 登录)
+- \`orbitd genconfig\`: 一键生成自签 CA + 服务器证书 + 配置 + 邀请码
+- 公共 HTTPS 自助入口(/api/v1/register, /ca.pem, 落地页)
+
+### 客户端 orbit-cli
+- 自助注册: \`orbit-cli register -invite <code> -server <host:port> -web <host:4431>\`(自动下载服务器 CA)
+
+### Linux 一键装
+\`sudo bash install-orbitd.sh --ip <服务器IP或域名>\` (见 repo deploy/install-orbitd.sh)
+
+> Windows 分发包(含 wintun.dll)由维护者按上游许可在服务器端构建, 见 deps/wintun-NOTICE.md。
+> Windows client 老用户升级: \`schtasks /run /tn OrbitClient\` 前先停旧进程, 新 IP 证书链 CA 于注册时自动下载。"

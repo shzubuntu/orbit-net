@@ -1,0 +1,13 @@
+[Unit]
+Description=Orbit Mesh Client (WSL)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/root/orbit/orbit-cli --config /root/orbit/orbit-cli.yaml
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

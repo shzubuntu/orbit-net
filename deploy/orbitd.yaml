@@ -1,0 +1,16 @@
+listen_addr: 0.0.0.0:28443
+tls:
+  cert_file: /opt/orbit/certs/orbitd-cert.pem
+  key_file: /opt/orbit/certs/orbitd-key.pem
+networks:
+  default: 10.0.0.0/24
+admin:
+  addr: 127.0.0.1:18444
+  token: <REDACTED_SET_BY_ADMIN>
+data_dir: /opt/orbit/data
+log_file: /opt/orbit/orbitd.log
+log_max_bytes: 10485760
+log_keep: 3
+default_quota:
+  bytes_per_day: 1073741824
+  egress_bytes_per_day: 536870912

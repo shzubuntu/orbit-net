@@ -1,0 +1,10 @@
+# 确保源码统一 LF(GitHub CI 上 gofmt/脚本换行检查不受 Windows autocrlf 影响)
+* text=auto
+*.go text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

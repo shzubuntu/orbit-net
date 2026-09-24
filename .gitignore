@@ -1,0 +1,34 @@
+# 构建产物
+orbitd
+orbit-cli
+orbit-cli.exe
+orbit-gui
+orbit-gui.exe
+orb
+*.exe
+orbit-bench
+orbitd.new
+orbitd.old
+dist/
+
+# 运行数据 / 私钥 / 证书
+data/
+certs/
+www/
+*.pem
+*.key
+*.crt
+orbit-cli.yaml
+orbitd.yaml
+
+# 内部运维脚本(含管理 token, 不发布)
+ops/
+
+# 日志与临时
+*.log
+*.tgz
+*.zip
+*.tmp
+/tmp/
+bench/out/
+.DS_Store
