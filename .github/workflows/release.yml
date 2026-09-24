@@ -75,5 +75,6 @@ jobs:
           > Windows client 老用户升级: `schtasks /run /tn OrbitClient` 前先停旧进程, 新 IP 证书链 CA 于注册时自动下载。
           EOF
           gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --notes-file NOTES.md
