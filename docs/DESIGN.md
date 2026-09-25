@@ -208,6 +208,7 @@ Windows 客户端的 wintun.dll 属 WireGuard LLC **Prebuilt Binaries 专有许�
   - GUI 主按钮为两态"连接/断开": 已连接时禁用模式/出口/egress/规则/keep_local/自启控件
     (断开后方可改); 托盘快速切模式走 `switch <mode>`。
 - **打包**: `build-orbit-win.sh` 产出 zip 含 `orbit-gui.exe`(windowsgui 子系统)+ 新
+  `orbit-cli.exe`; 老用户把新版 CLI 覆盖到 `C:\ProgramData\OrbitClient\` 后即可用 GUI。
 - **交互修复: 连接/断开一次点击即生效**(2026-09-25 v7, 双击问题根因与对策):
   - `ShellExecute("runas")` 是异步的: 返回时提权子进程(set/stop)刚被拉起,
     落定(taskkill + wintun 清场 + 守护重拨号建网卡)需 2-4s。旧版固定 sleep
@@ -223,7 +224,88 @@ Windows 客户端的 wintun.dll 属 WireGuard LLC **Prebuilt Binaries 专有许�
     (`net.ParseIP`/`ParseCIDR` 校验, 域名拒绝并提示), 同目标+出口去重;
     未提交的增删保存在面板缓存 `rules`/`rulesDirty`, 不被 status 同步覆盖,
     连接(set)成功落盘后清 dirty 释放。
-  `orbit-cli.exe`; 老用户把新版 CLI 覆盖到 `C:\ProgramData\OrbitClient\` 后即可用 GUI。
 - **构建注意**: GUI 目录不在公开仓(FOSS 发布只含内核+CLI); 构建前需用
   `rsrc` 从 `app.manifest`+`assets/orbit.ico` 生成 `rsrc_windows.syso`——
   无 comctl32 v6 manifest 时 64 位工具栏提示注册必崩(`TTM_ADDTOOL failed`)。
+
+## 13. Windows GUI 显示同步与守护存活判定修复(2026-09-25 v14/v15)
+
+### 13.1 守护 exe 拆名: "连不上"的真正根因
+
+守护进程与管理子命令(`status`/`set`/`stop`/`usage`…)原本是**同一个二进制**
+(`orbit-cli.exe`)。而两处"守护是否在跑"的判定都只用 `tasklist` 按 **exe 名**匹配
+`orbit-cli.exe`, 于是 GUI/终端里任何并发的 `orbit-cli status` 调用都会被误认为守护:
+
+- `run-agent.cmd` 的守卫 `tasklist … | find … && exit /b 0` → **真守护从未被拉起**;
+- `runningDaemons()`(只排除自己 PID) → `status` 的 `daemon_running` **假阳性**。
+
+两者叠加的外部表现正是用户报告的现象: 点"连接"后 GUI 显示"已连接 · 网卡待建",
+实际既无守护进程也无虚拟网卡, **连不上**; 且判定随并发调用出现与否抖动, 面板在
+"已连接/未连接"之间来回闪。
+
+修复: 守护改用**独立 exe 名** `orbit-daemon.exe`(与 `orbit-cli.exe` 同源、同 hash),
+**exe 名本身即判据** —— 无歧义、零额外开销(不引入 WMI/PowerShell 查命令行, 也不用
+unsafe 走 `NtQueryInformationProcess`)。`main.go` 的分发逻辑不受影响: 守护以
+`-config` 作为首参启动, 不匹配任何子命令, 仍走守护分支。
+
+同步改动(`admincmd.go` 新增 `daemonExeName` 常量 + `deploy/build-orbit-win.sh`):
+打包多产一份 `orbit-daemon.exe`; `run-agent.cmd` / `relink.cmd` 的守卫与启动目标改名;
+一键安装/安装脚本增加缺件检查与拷贝; 卸载脚本两个名字都杀; `run-agent.cmd` 启动行加
+`/b`(不弹控制台窗口)与启动前崩溃日志重定向。
+**老用户升级须先停掉客户端, 再把两个 exe 一起覆盖**(缺一不可)。
+
+### 13.2 写操作必须用 `-flag=value`
+
+Go `flag` 遇 bool 的**分离式**写法 `-egress false` 会把 `false` 当成首个位置参数、
+**终止解析并丢弃其后所有 flag**; 且 `elevate()` 早期用 `strings.Join(args, " ")` 拼命令行,
+会连带**丢失空值参数**。故 GUI 拼参一律用 `-flag=value` 单 token 形式; 也**不能**给值加
+引号(`flag` 不剥离引号, 引号会原样进入值)。
+
+### 13.3 提权路径
+
+写操作统一 `ShellExecute("runas")`; 但若**当前进程已提权**则改走 `exec.Command` 的
+**数组参数**直接执行 —— 既避免冗余 UAC, 又能同步拿到错误返回。提权判定用
+`golang.org/x/sys/windows` 的 `GetTokenInformation(TokenElevation)`(`lxn/win` 无此 API)。
+
+### 13.4 刷新链路自愈 + 轻量刷新
+
+原显示不同步的根因是 `syncStatus` 的 `refreshing` 互斥标志, 叠加"窗口可见时 5s ticker
+直接 `continue`": 写操作后**唯一那次**全量刷新若因忙被拒, 就没有任何重试入口, 面板永久
+卡在旧状态(按钮显示"断开"而守护已停)。对策:
+
+- `refreshStaleAfter`(15s)让渡: 超过即视为僵死, 放弃并重新发起;
+- `exec.Cmd.WaitDelay = 2s`: 防孙进程继承 stdout 句柄时, `cmd.Output()` 在 ctx 杀进程后
+  仍永久阻塞管道;
+- 新增 `renderConnOnly` **轻量刷新**: 只改状态行/按钮/启用态, **绝不写输入控件选中值**,
+  因此窗口可见、用户正在编辑时也能安全周期运行;
+- 新增 `assumeConnState`: 写操作确认守护状态后立即更新连接态显示, 不等慢刷新;
+- ticker 常驻 1s, 不再因 `busy`/窗口可见而跳过;
+- 诊断日志只在**异常路径**(REJECT / STALE / INVALID)记录, 不在每次刷新的热路径写
+  (后者约 1MB/天, 无诊断价值)。
+
+### 13.5 `status -brief`
+
+新增 `-brief` 跳过 `fetchDevices`(≤4s)与 `log_tail`, 供 GUI 高频轮询; 完整刷新仍走全量。
+实测瓶颈其实在进程启动(`tasklist` + 配置加载), brief 与全量都约 1.7–2.2s, 收益有限;
+但它避免了设备探测的额外等待与副作用, 语义上更适合轮询。
+
+### 13.6 生命周期实测(v15, 真实点击)
+
+以 UIA 按控件名取 `NativeWindowHandle` + Win32 `BM_CLICK` 真实点击, 逐秒同时采样 CLI 与 UI:
+
+| 阶段 | 操作 | 收敛耗时 | 终态 |
+| --- | --- | --- | --- |
+| A | CLI `stop` 归一 | 1s | `daemon=False` / UI"未连接"+"连接" |
+| B | 点「连接」(simple) | 2s | `daemon=True`, PID 为真守护; UI"已连接 · 网卡 10.0.0.7/24"+"断开" |
+| C | 点「断开」 | 2s | `daemon=False` / UI"未连接"+"连接" |
+
+CLI 与 UI 双向一致, 无闪烁; 虚拟网卡首次拿到 IP(此前恒为空/"网卡待建")。
+
+### 13.7 GUI 自动化测试的两个坑
+
+- walk 控件在 UIA 中**全被报为 `Pane`**, 无法按类型定位; 须用 UIA 按**控件名**取
+  `NativeWindowHandle`, 再用 Win32 `BM_CLICK` 触发。
+- UIPI 要求点击脚本与被点 GUI **同为 HIGHEST** 才能注入; 生产路径的 UAC 人工确认无法自动化,
+  测试改用 HIGHEST 计划任务(`/it /rl HIGHEST`)承载 GUI 绕开 UAC。
+- PS 5.1 读**无 BOM** 的 UTF-8 脚本会按 ANSI 解析, 破坏脚本里的中文字面量
+  → 含中文的 `.ps1` 必须带 UTF-8 BOM。
