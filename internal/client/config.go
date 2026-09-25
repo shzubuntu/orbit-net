@@ -73,3 +73,17 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// Save 原子写回配置(临时文件 + 改名, 避免半写): 供 orbit-cli set / orbit-gui 共用。
+// 写入保持结构字段顺序, 无 BOM, 0600 仅属主可读(内含设备令牌)。
+func (c *Config) Save(path string) error {
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

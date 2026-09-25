@@ -34,6 +34,14 @@ func main() {
 			os.Exit(runRegister(os.Args[2:]))
 		case "devices":
 			os.Exit(runDevices(os.Args[2:]))
+		case "status":
+			os.Exit(runStatus(os.Args[2:]))
+		case "set":
+			os.Exit(runSet(os.Args[2:]))
+		case "autostart":
+			os.Exit(runAutostart(os.Args[2:]))
+		case "usage":
+			os.Exit(runUsage(os.Args[2:]))
 		}
 	}
 	var cfgPath string
@@ -381,9 +389,14 @@ func doDevicePost(cfgPath, url string, body map[string]string, label string) int
 
 // apiDo 带设备-token 鉴权的通用请求; 返回 响应/原文/是否 2xx。
 func apiDo(method, url string, cfg *client.Config, body []byte) (*http.Response, []byte, bool) {
+	return apiDoTT(method, url, cfg, body, 30*time.Second)
+}
+
+// apiDoTT 同 apiDo, 但可指定超时; 供 status 等短轮询用(服务器不可达时不被拖 30s)。
+func apiDoTT(method, url string, cfg *client.Config, body []byte, timeout time.Duration) (*http.Response, []byte, bool) {
 	httpc := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-		Timeout:   30 * time.Second,
+		Timeout:   timeout,
 	}
 	var rd io.Reader
 	if body != nil {

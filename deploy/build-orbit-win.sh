@@ -10,15 +10,25 @@ rm -rf /tmp/winpkg && mkdir -p /tmp/winpkg
 # 1. 交叉编译(默认 console 子系统; 禁止 -H windowsgui, 见 AGENTS 教训 9)
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /tmp/winpkg/orbit-cli.exe ./cmd/orbit-cli
 
-# 2. 运行时依赖(证书由 register 阶段按服务器地址现场下载, 不再预置)
+# 3. GUI 托盘(也打进 zip): 优先同目录新版 orbit-cli.exe, 退回 C:\ProgramData\OrbitClient\
+#    rsrc.syso = 内嵌 comctl32 v6 manifest + 应用图标(无则生成一次, 提交排除)
+if [ ! -f cmd/orbit-gui/rsrc_windows.syso ]; then
+  go run github.com/akavel/rsrc@latest \
+    -manifest cmd/orbit-gui/app.manifest \
+    -ico cmd/orbit-gui/assets/orbit.ico \
+    -arch amd64 -o cmd/orbit-gui/rsrc_windows.syso
+fi
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o /tmp/winpkg/orbit-gui.exe ./cmd/orbit-gui
+
+# 4. 运行时依赖(证书由 register 阶段按服务器地址现场下载, 不再预置)
 cp /opt/orbit/www/wintun.dll /tmp/winpkg/
 cp /root/project/orbit/deploy/win-pkg/wintun-LICENSE.txt /tmp/winpkg/wintun-LICENSE.txt
 cp /root/project/orbit/deps/wintun-NOTICE.md /tmp/winpkg/wintun-NOTICE.md
 
-# 3. 自助开户脚本: 填邀请码 -> 公网注册 -> 生成 orbit-cli.yaml
+# 5. 自助开户脚本: 填邀请码 -> 公网注册 -> 生成 orbit-cli.yaml
 cp /root/project/orbit/deploy/win-pkg/register.ps1 /tmp/winpkg/register.ps1
 
-# 4. 双击一键安装: 自动升权 -> 填服务器地址+邀请码 -> exe注册开户(现场下载CA) -> 装 ProgramData -> 建任务自启
+# 5. 双击一键安装(orbit-setup.bat): 自动升权 -> 填服务器地址+邀请码 -> exe注册开户(现场下载CA) -> 装 ProgramData -> 建任务自启
 printf '%s\r\n' \
 '@echo off' \
 'chcp 65001 >nul' \
@@ -65,7 +75,7 @@ printf '%s\r\n' \
 'pause' \
 > /tmp/winpkg/orbit-setup.bat
 
-# 5. cmd 脚本(CRLF; 引号/重定向只写在文件里,不在 schtasks 命令行)
+# 6. 手动安装(install.cmd): 引号/重定向只写在文件里, 不在 schtasks 命令行
 printf '%s\r\n' \
 '@echo off' \
 'setlocal' \
@@ -119,7 +129,7 @@ printf '%s\r\n' \
 'pause' \
 > /tmp/winpkg/uninstall.cmd
 
-# 5. 自愈: 计划任务启动时检查 Orbit 网卡与进程, 掉了每小时拉起一次
+# 7. 自愈: 计划任务启动时检查 Orbit 网卡与进程, 掉了每小时拉起一次
 printf '%s\r\n' \
 '@echo off' \
 'set APP=C:\ProgramData\OrbitClient' \
@@ -134,7 +144,7 @@ printf '%s\r\n' \
 'tasklist /fi "imagename eq orbit-cli.exe" 2>nul | find /i "orbit-cli.exe" >nul || (C:\ProgramData\OrbitClient\run-agent.cmd &)' \
 > /tmp/winpkg/relink.cmd
 
-# 6. README
+# 8. README
 printf '%s\r\n' \
 '=== Orbit Client (Windows) ===' \
 '1. [推荐] 双击 orbit-setup.bat -> 自动提升管理员 -> 输入服务器地址(如 vpn.example.com:4431)+邀请码 -> 自动下载服务器CA+注册开户+安装+启动, 一步到位' \
@@ -143,10 +153,13 @@ printf '%s\r\n' \
 '4. 开机自启: 已建计划任务 OrbitClient(onlogon, SYSTEM); 另跑 install-relink.cmd 可加每小时兜底自愈' \
 '5. 出口上网: 向管理员申请授权, 授权后把 orbit-cli.yaml 的 mode 改 smart 并配置 rules' \
 '6. 卸载: 右键 uninstall.cmd 管理员运行(删任务/杀进程/清目录)' \
+'7. 图形面板 orbit-gui.exe: 与同 zip 的新版 orbit-cli.exe 放同一目录, 双击启动(托盘常驻);' \
+'   可切模式/选出口/开自启/看用量/看日志; 写操作(改配置/重启/自启)会弹 UAC 管理员确认' \
+'8. 老用户升级: 停掉客户端后把新版 orbit-cli.exe 复制到 C:\ProgramData\OrbitClient\ 覆盖, 再启动 orbit-gui 即可' \
 '---' \
 > /tmp/winpkg/README.txt
 
-# 7. 打 zip 到下载目录
+# 9. 打 zip 到下载目录
 cd /tmp/winpkg
 rm -f /opt/orbit/www/orbit-client.zip
 zip -qr /opt/orbit/www/orbit-client.zip .

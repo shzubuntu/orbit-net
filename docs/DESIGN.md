@@ -140,7 +140,7 @@ P1(内测体验): UDP/ICMP 出口、global 完整(keep-local/DNS)、免费档配
     门户管理页(agent 仓内 portal)✅: 登录态 `/orbit` 设备管理页, proxy 到 orbitd admin
     (accounts/devices/clients/invites/usage 只读 + 档位切换/加设备/吊销/出口授权/邀请码管理),
     `X-Admin-Token` 由 portal 持有, 公网不暴露 orbitd admin。
-  - 待续: P2P 直连(`transport.Direct()`)、多区域(数据面实例化 + 控制面共享)、GUI 客户端。
+  - 待续: P2P 直连(`transport.Direct()`)、多区域(数据面实例化 + 控制面共享); GUI 客户端已交付(见 §12)。
 
 ## 10. 自包含部署与双入口(2026-09 开放内核化)
 
@@ -174,4 +174,23 @@ Windows 客户端的 wintun.dll 属 WireGuard LLC **Prebuilt Binaries 专有许�
 ## 11. 里程碑(2026-09 M4: 开放内核)
 
 - **M4(开放内核)**: 双入口+自包含部署 ✅(genconfig/内嵌UI/公共注册/CA发放, 生产真机验证)。
-  剩余: P2P 直连、多区域骨架、GUI 客户端、压测基线、README/文档形成对外口径。
+  剩余: P2P 直连、多区域骨架、压测基线、README/文档形成对外口径。
+
+## 12. Windows GUI 客户端（2026-09-25 交付, P0+P1 全量）
+
+- **形态**: 原生 Go 托盘常驻 + walk 窗口(面板)。面向 Windows 桌面用户的管理壳,
+  覆盖: 模式切换(simple/smart/global)、出口节点选择、egress/keep-local 编辑、开机自启
+  与每小时自愈(计划任务)开关、**GUI 自身"登录时启动面板"开关(HKCU Run `OrbitGUI` 值,
+  无需提权, 面板+托盘双入口)**、连接/网卡/设备状态、当日用量、日志末尾、邀请码注册向导。
+- **底层分层**: GUI 只做壳, 一切管理能力走 `orbit-cli` 子命令层:
+  - `status`(连接/模式/出口/自启/日志/设备/用量汇总 JSON, 供 GUI 直接渲染);
+  - `set`(mode/egress/exit/keep-local 落盘 + 重启守护进程, 幂等);
+  - `autostart`(查询/开关 OrbitClient 主任务 与 OrbitClientRelink 每小时自愈);
+  - `usage`(当日用量+配额)。
+  - 读操作由 GUI 直接子进程调用并解析; 写操作统一经 `ShellExecute("runas")` 提权调 CLI
+    (改 ProgramData 配置/重启 SYSTEM 守护/建删计划任务均需管理员)。
+- **打包**: `build-orbit-win.sh` 产出 zip 含 `orbit-gui.exe`(windowsgui 子系统)+ 新
+  `orbit-cli.exe`; 老用户把新版 CLI 覆盖到 `C:\ProgramData\OrbitClient\` 后即可用 GUI。
+- **构建注意**: GUI 目录不在公开仓(FOSS 发布只含内核+CLI); 构建前需用
+  `rsrc` 从 `app.manifest`+`assets/orbit.ico` 生成 `rsrc_windows.syso`——
+  无 comctl32 v6 manifest 时 64 位工具栏提示注册必崩(`TTM_ADDTOOL failed`)。
