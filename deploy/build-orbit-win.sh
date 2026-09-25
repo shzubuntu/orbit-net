@@ -9,6 +9,7 @@ rm -rf /tmp/winpkg && mkdir -p /tmp/winpkg
 
 # 1. 交叉编译(默认 console 子系统; 禁止 -H windowsgui, 见 AGENTS 教训 9)
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /tmp/winpkg/orbit-cli.exe ./cmd/orbit-cli
+cp /tmp/winpkg/orbit-cli.exe /tmp/winpkg/orbit-daemon.exe   # 守护用独立 exe 名, 见 admincmd.go:daemonExeName
 
 # 3. GUI 托盘(也打进 zip): 优先同目录新版 orbit-cli.exe, 退回 C:\ProgramData\OrbitClient\
 #    rsrc.syso = 内嵌 comctl32 v6 manifest + 应用图标(无则生成一次, 提交排除)
@@ -41,6 +42,7 @@ printf '%s\r\n' \
 ')' \
 'echo ===== Orbit 一键安装 =====' \
 'if not exist "orbit-cli.exe" (echo [ERR] 缺少 orbit-cli.exe - 请先完整解压整个 zip 再双击本脚本 & pause & exit /b 1)' \
+'if not exist "orbit-daemon.exe" (echo [ERR] 缺少 orbit-daemon.exe - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
 'if not exist "wintun.dll"    (echo [ERR] 缺少 wintun.dll    - 请先完整解压整个 zip 再双击本脚本 & pause & exit /b 1)' \
 'set "SRV="' \
 'set /p SRV=服务器地址(公共HTTPS入口, 如 vpn.example.com:4431; 管理员提供): ' \
@@ -64,6 +66,7 @@ printf '%s\r\n' \
 'set APP=C:\ProgramData\OrbitClient' \
 'mkdir "%APP%" 2>nul' \
 'copy /y orbit-cli.exe "%APP%" >nul' \
+'copy /y orbit-daemon.exe "%APP%" >nul' \
 'copy /y wintun.dll "%APP%" >nul' \
 'copy /y orbitd-cert.pem "%APP%" >nul' \
 'copy /y orbit-cli.yaml "%APP%" >nul' \
@@ -83,12 +86,14 @@ printf '%s\r\n' \
 'net session >nul 2>&1 || (echo Please run as Administrator (右键以管理员身份运行). & pause & exit /b 1)' \
 'set APP=C:\ProgramData\OrbitClient' \
 'if not exist "orbit-cli.exe"   (echo [ERR] orbit-cli.exe   missing - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
+'if not exist "orbit-daemon.exe" (echo [ERR] 缺少 orbit-daemon.exe - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
 'if not exist "wintun.dll"      (echo [ERR] wintun.dll      missing - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
 'if not exist "orbitd-cert.pem" (echo [ERR] orbitd-cert.pem missing - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
 'if not exist "orbit-cli.yaml"  (echo [ERR] orbit-cli.yaml  missing - 请先运行 register.ps1 领配置,再回来装. & pause & exit /b 1)' \
 'if not exist "run-agent.cmd"   (echo [ERR] run-agent.cmd   missing - 请先完整解压整个 zip 再运行本脚本 & pause & exit /b 1)' \
 'mkdir "%APP%" 2>nul' \
 'copy /y orbit-cli.exe "%APP%" >nul' \
+'copy /y orbit-daemon.exe "%APP%" >nul' \
 'copy /y wintun.dll "%APP%" >nul' \
 'copy /y orbitd-cert.pem "%APP%" >nul' \
 'copy /y orbit-cli.yaml "%APP%" >nul' \
@@ -104,7 +109,10 @@ printf '%s\r\n' \
 printf '%s\r\n' \
 '@echo off' \
 'cd /d "%~dp0"' \
-'tasklist /fi "imagename eq orbit-cli.exe" 2>nul | find /i "orbit-cli.exe" >nul && exit /b 0' \
+'rem 守护用独立 exe 名: 若按 orbit-cli.exe 判定, GUI/终端里任何并发的' \
+'rem orbit-cli status 调用都会被误认为"守护已在跑", 从而跳过真正拉起。' \
+'tasklist /fi "imagename eq orbit-daemon.exe" 2>nul | find /i "orbit-daemon.exe" >nul && exit /b 0' \
+'start "" /b "C:\ProgramData\OrbitClient\orbit-daemon.exe" -config "C:\ProgramData\OrbitClient\orbit-cli.yaml" 2>"C:\ProgramData\OrbitClient\orbit-daemon-crash.log"' \
 'start "" "C:\ProgramData\OrbitClient\orbit-cli.exe" -config "C:\ProgramData\OrbitClient\orbit-cli.yaml"' \
 > /tmp/winpkg/run-agent.cmd
 
@@ -116,6 +124,7 @@ printf '%s\r\n' \
 'net session >nul 2>&1 || (echo Please run as Administrator (右键以管理员身份运行). & pause & exit /b 1)' \
 'schtasks /delete /tn OrbitClient /f >nul 2>&1' \
 'schtasks /delete /tn OrbitClientRelink /f >nul 2>&1' \
+'taskkill /f /im orbit-daemon.exe >nul 2>&1' \
 'taskkill /f /im orbit-cli.exe >nul 2>&1' \
 'ping 127.0.0.1 -n 3 >nul' \
 'rd /s /q "C:\ProgramData\OrbitClient" >nul 2>&1' \
@@ -141,7 +150,7 @@ printf '%s\r\n' \
 printf '%s\r\n' \
 '@echo off' \
 'net session >nul 2>&1 || (echo need admin & exit /b 1)' \
-'tasklist /fi "imagename eq orbit-cli.exe" 2>nul | find /i "orbit-cli.exe" >nul || (C:\ProgramData\OrbitClient\run-agent.cmd &)' \
+'tasklist /fi "imagename eq orbit-daemon.exe" 2>nul | find /i "orbit-daemon.exe" >nul || (C:\ProgramData\OrbitClient\run-agent.cmd &)' \
 > /tmp/winpkg/relink.cmd
 
 # 8. README
@@ -155,7 +164,8 @@ printf '%s\r\n' \
 '6. 卸载: 右键 uninstall.cmd 管理员运行(删任务/杀进程/清目录)' \
 '7. 图形面板 orbit-gui.exe: 与同 zip 的新版 orbit-cli.exe 放同一目录, 双击启动(托盘常驻);' \
 '   可切模式/选出口/开自启/看用量/看日志; 写操作(改配置/重启/自启)会弹 UAC 管理员确认' \
-'8. 老用户升级: 停掉客户端后把新版 orbit-cli.exe 复制到 C:\ProgramData\OrbitClient\ 覆盖, 再启动 orbit-gui 即可' \
+'8. 老用户升级: 先停掉客户端, 再把新版 orbit-cli.exe 与 orbit-daemon.exe 一起复制到 C:\ProgramData\OrbitClient\ 覆盖, 最后启动 orbit-gui' \
+'   (守护拆成独立 exe 名以免把并发的 orbit-cli status 调用误判为守护; 两个文件缺一不可)' \
 '---' \
 > /tmp/winpkg/README.txt
 

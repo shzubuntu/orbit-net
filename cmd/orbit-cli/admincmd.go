@@ -1,6 +1,7 @@
 // 管理子命令(orbit-cli status/set/autostart/usage):
-//   供 orbit-gui 托盘与运维脚本共用的幂等底层 —— 改配置/重启进程/建删计划任务
-//   都在这一层完成, GUI 只负责展示与调起(写入类操作经 ShellExecute runas 提权)。
+//
+//	供 orbit-gui 托盘与运维脚本共用的幂等底层 —— 改配置/重启进程/建删计划任务
+//	都在这一层完成, GUI 只负责展示与调起(写入类操作经 ShellExecute runas 提权)。
 package main
 
 import (
@@ -41,18 +42,24 @@ type procInfo struct {
 }
 
 // runningDaemons 列出其它 orbit-cli 进程。
+// daemonExeName 是守护进程的可执行文件名。守护必须与管理 CLI(orbit-cli.exe)
+// 用不同文件名: 否则 `tasklist` 按 orbit-cli.exe 判定"守护在跑"时, 会把 GUI/终端
+// 里并发的 `orbit-cli status` 调用误认为守护 —— 导致 status 的 daemon_running
+// 假阳性, 且 run-agent.cmd 的守卫跳过真正拉起(表现为"点连接连不上")。
+const daemonExeName = "orbit-daemon.exe"
+
 func runningDaemons() []procInfo {
 	var out []procInfo
 	if runtime.GOOS == "windows" {
-		raw, err := exec.Command("tasklist", "/fi", "imagename eq orbit-cli.exe", "/fo", "csv", "/nh").Output()
+		raw, err := exec.Command("tasklist", "/fi", "imagename eq "+daemonExeName, "/fo", "csv", "/nh").Output()
 		if err != nil {
 			return out
 		}
 		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-			if !strings.Contains(line, "orbit-cli") {
+			if !strings.Contains(line, strings.TrimSuffix(daemonExeName, ".exe")) {
 				continue
 			}
-			// CSV: "orbit-cli.exe","PID","Console","Session#","Mem"
+			// CSV: "orbit-daemon.exe","PID","Console","Session#","Mem"
 			parts := strings.Split(line, ",")
 			if len(parts) < 2 {
 				continue
@@ -115,7 +122,9 @@ func adapterInfo(tunName string) (bool, string, string) {
 		tunName = "Orbit"
 	}
 	if runtime.GOOS == "windows" {
-		ps := fmt.Sprintf("$a=Get-NetIPAdapter -Name '%s' -ErrorAction SilentlyContinue; if($a){$aa=Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; Write-Output ('STATUS='+$a.Status); if($aa){Write-Output ('IP='+$aa.IPAddress+'/'+$aa.PrefixLength)}}", tunName)
+		// 注意: SYSTEM 会话没有 Get-NetIPAdapter(NetTCPIP 模块未加载), 但 Get-NetAdapter
+		//      与 Get-NetIPAddress 可用, 因此用它们探测, 否则 status 永远报 probe err。
+		ps := fmt.Sprintf("$a=Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue; if($a){$aa=Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue; Write-Output ('STATUS='+$a.Status); if($aa){Write-Output ('IP='+$aa.IPAddress+'/'+$aa.PrefixLength)}}", tunName)
 		raw, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps).Output()
 		if err != nil {
 			return false, "", fmt.Sprintf("probe err: %v", err)
@@ -202,6 +211,9 @@ func selfAPIBaseCli(cfg *client.Config) string {
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	cfgPath := fs.String("config", deviceDefaultConfig(), "orbit-cli.yaml 路径")
+	// -brief: skip device probing (up to 4s) and log tail, for GUI polling.
+	// Connection/mode/adapter keys are still returned in full.
+	brief := fs.Bool("brief", false, "fast status only (skip devices/log_tail)")
 	_ = fs.Parse(args)
 
 	type taskInfo struct {
@@ -230,6 +242,7 @@ func runStatus(args []string) int {
 		st["egress"] = cfg.Egress
 		st["exit_device"] = cfg.ExitDevice
 		st["keep_local"] = cfg.KeepLocal
+		st["rules"] = cfg.Rules
 	}
 
 	// 守护进程
@@ -278,12 +291,12 @@ func runStatus(args []string) int {
 	}
 
 	// 日志尾巴
-	if cfg != nil && cfg.LogFile != "" {
+	if !*brief && cfg != nil && cfg.LogFile != "" {
 		st["log_tail"] = logTail(cfg.LogFile, 15)
 	}
 
 	// 出口候选(同账户可用出口, 供 GUI 下拉; 服务器不可达时不阻塞)
-	if cfg != nil {
+	if !*brief && cfg != nil {
 		st["devices"] = fetchDevices(cfg, 4*time.Second)
 	}
 
@@ -321,6 +334,7 @@ func runSet(args []string) int {
 	egress := fs.Bool("egress", false, "本机开放为出口 (显式传 true/false 才生效)")
 	exit := fs.String("exit", "", "global/smart 默认出口 (传空清除)")
 	keepLocal := fs.String("keep-local", "", "global 排除网段, 逗号分隔 (传空清除)")
+	rules := fs.String("rules", "", "smart 规则: 逗号分隔 目标=出口设备 (target 支持 IP/CIDR; 传空清除)")
 	noRestart := fs.Bool("no-restart", false, "只改写配置不重启守护进程")
 	fs.Parse(args)
 
@@ -354,6 +368,18 @@ func runSet(args []string) int {
 	if set["keep-local"] {
 		cfg.KeepLocal = splitList(*keepLocal)
 	}
+	if set["rules"] {
+		var parsed []client.RuleSpec
+		for _, item := range splitList(*rules) {
+			kv := strings.SplitN(item, "=", 2)
+			if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" {
+				fmt.Fprintf(os.Stderr, "[ERR] 非法规则 %q (须 target=出口形式, 如 8.8.8.8=srv-exit)\n", item)
+				return 2
+			}
+			parsed = append(parsed, client.RuleSpec{Target: strings.TrimSpace(kv[0]), ExitDevice: strings.TrimSpace(kv[1])})
+		}
+		cfg.Rules = parsed
+	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "[ERR] %v\n", err)
 		return 2
@@ -362,13 +388,14 @@ func runSet(args []string) int {
 		fmt.Fprintf(os.Stderr, "[ERR] 写配置: %v\n", err)
 		return 1
 	}
+	syncModeConfig(*cfgPath, cfg) // set 后同步当前模式独立存档
 	if !*noRestart {
 		if err := restartDaemon(); err != nil {
 			fmt.Fprintf(os.Stderr, "[WARN] %v\n", err)
 		}
 	}
-	fmt.Printf("applied: mode=%s egress=%v exit=%q keep_local=%v\n",
-		cfg.Mode, cfg.Egress, cfg.ExitDevice, cfg.KeepLocal)
+	fmt.Printf("applied: mode=%s egress=%v exit=%q keep_local=%v rules=%d\n",
+		cfg.Mode, cfg.Egress, cfg.ExitDevice, cfg.KeepLocal, len(cfg.Rules))
 	return 0
 }
 
@@ -384,9 +411,10 @@ func splitList(s string) []string {
 	return out
 }
 
-// restartDaemon: 停其它 orbit-cli → 优先经计划任务(Windows)重启到 SYSTEM 上下文,
-// 无任务则后台自拉起。
-func restartDaemon() error {
+// killDaemons: 停全部其它 orbit-cli 进程(断开/切换前清场)。
+// 进程一死, 其持有的 wintun 适配器由内核销毁, 绑定路由随之清除 ——
+// 这就是"断开 = 清理隧道/虚拟网卡/路由"的落地; GUI 是独立进程不受影响。
+func killDaemons() {
 	for _, d := range runningDaemons() {
 		if runtime.GOOS == "windows" {
 			_ = exec.Command("taskkill", "/f", "/pid", strconv.Itoa(d.PID)).Run()
@@ -395,6 +423,12 @@ func restartDaemon() error {
 		}
 	}
 	time.Sleep(800 * time.Millisecond) // 等 wintun 清场, 防 TUNSETIFF EBUSY
+}
+
+// restartDaemon: 停其它 orbit-cli → 优先经计划任务(Windows)重启到 SYSTEM 上下文,
+// 无任务则后台自拉起。
+func restartDaemon() error {
+	killDaemons()
 
 	if runtime.GOOS == "windows" {
 		if on, _, _ := taskState("OrbitClient"); on {
@@ -509,4 +543,121 @@ func runUsage(args []string) int {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// ---- stop / switch ----
+//
+// stop   : 断开 = 杀全部 orbit-cli 进程, 隧道/网卡/路由随进程消亡自动清空,
+//          计划任务与配置原样保留(GUI 是独立进程, 不受影响)。
+// switch : 每模式独立配置切换 —— 各模式存 orbit-cli-<mode>.yaml,
+//          切模式 = 回写旧档 → 激活目标档 → 按需重启守护。
+
+// modeConfigPath 每模式独立存挡路径: <dir>/orbit-cli-<mode>.yaml。
+func modeConfigPath(cfgPath, mode string) string {
+	dir := filepath.Dir(cfgPath)
+	base := filepath.Base(cfgPath)                       // orbit-cli.yaml
+	stem := strings.TrimSuffix(base, filepath.Ext(base)) // orbit-cli
+	return filepath.Join(dir, stem+"-"+mode+".yaml")
+}
+
+// syncModeConfig 把当前(已保存的)配置同步写一份到对应模式的独立档。
+// 供 set 成功后调用: 用户在某模式下改的出口/规则/keep_local 只进该模式档,
+// 切走再切回不丢。
+func syncModeConfig(cfgPath string, cfg *client.Config) {
+	mp := modeConfigPath(cfgPath, string(cfg.Mode))
+	if mp == cfgPath {
+		return
+	}
+	if err := cfg.Save(mp); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] 同步模式配置 %s: %v\n", mp, err)
+	}
+}
+
+// runStop 断开: 杀全部 orbit-cli, 等 wintun 清场。不删任务/不改配置。
+func runStop(args []string) int {
+	fs := flag.NewFlagSet("stop", flag.ExitOnError)
+	_ = fs.Parse(args)
+	n := len(runningDaemons())
+	killDaemons()
+	fmt.Printf("stopped: killed %d daemon process(es); tunnel/adapter/routes cleared\n", n)
+	return 0
+}
+
+// runSwitch 切模式: 回写当前档 → 激活目标档(首次自动初始化) → 守护按原状态重启。
+// 注意: Go flag 包遇到第一个位置参数即停止解析, 所以 -config 需手工扫描,
+// 兼容 `switch global` 与 `switch global -config x` 两种调用。
+func runSwitch(args []string) int {
+	cfgPath := deviceDefaultConfig()
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-config" && i+1 < len(args) {
+			cfgPath = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], "config=") {
+			cfgPath = strings.TrimPrefix(args[i], "config=")
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "用法: orbit-cli switch <simple|smart|global> [-config orbit-cli.yaml]")
+		return 2
+	}
+	mode := rest[0]
+	switch protocol.Mode(mode) {
+	case protocol.ModeSimple, protocol.ModeSmart, protocol.ModeGlobal:
+	default:
+		fmt.Fprintf(os.Stderr, "[ERR] 非法 mode=%q (simple|smart|global)\n", mode)
+		return 2
+	}
+
+	// 1) 回写当前活动配置到其模式档(保留 GUI 最新编辑)。
+	cur, err := client.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ERR] 读配置 %s: %v\n", cfgPath, err)
+		return 1
+	}
+	syncModeConfig(cfgPath, cur)
+
+	// 2) 目标模式档: 存在则直接用; 不存在则从当前配置派生(只改 mode + 规整)。
+	target := modeConfigPath(cfgPath, mode)
+	tcfg, err := client.Load(target)
+	if err != nil {
+		tcfg = cur
+		tcfg.Mode = protocol.Mode(mode)
+	}
+	// 按模式规整: global 与 egress 互斥, 也无需 rules; simple 无出口概念。
+	switch mode {
+	case "global":
+		tcfg.Egress = false
+		tcfg.Rules = nil
+	case "simple":
+		tcfg.Egress = false
+		tcfg.ExitDevice = ""
+		tcfg.Rules = nil
+	}
+	if err := tcfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "[ERR] %v\n", err)
+		return 2
+	}
+	if err := tcfg.Save(target); err != nil { // 目标档落盘(首次即初始化)
+		fmt.Fprintf(os.Stderr, "[ERR] 写模式档 %s: %v\n", target, err)
+		return 1
+	}
+	if err := tcfg.Save(cfgPath); err != nil { // 激活
+		fmt.Fprintf(os.Stderr, "[ERR] 激活配置 %s: %v\n", cfgPath, err)
+		return 1
+	}
+
+	// 3) 守护重启策略: 切换前在跑(已连接)才重启——断开态切模式保持离线。
+	wasRunning := len(runningDaemons()) > 0
+	if wasRunning {
+		if err := restartDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] %v\n", err)
+		}
+	}
+	fmt.Printf("switched: mode=%s active=%s daemon=%v\n", mode, cfgPath, wasRunning)
+	return 0
 }
