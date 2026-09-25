@@ -23,7 +23,8 @@ sudo bash bench/relay_throughput.sh client <A的meshIP> 5201 30   # B 端
 | 链路 | 指标 | 实测 | 备注 |
 |---|---|---|---|
 | 公网 本机→服务器 | RTT | ~20-40ms | 各家 ISP 差异 |
-| 中继 mesh 延迟(surface↔homepc via srv) | avg RTT | 待补 | 真机 e2e 后填 |
+| 中继 mesh 延迟 homepc↔homevm（home-mesh，via srv） | avg RTT | ~19-21ms（20/20，min 19 / max 60） | 2026-09-25 实测 |
+| 中继 mesh 延迟 surface/Songhz↔srv-exit（win-beta，via srv） | avg RTT | ~13ms（20/20，min 12 / max 16） | 2026-09-25 实测 |
 | 中继吞吐 iperf3 | Mbps | 待补 | B(dumb→A) |
 
 > 说明：orbit 数据面当前核心诉求是「同城双点互联 + 最后一公里容灾」，不追求
