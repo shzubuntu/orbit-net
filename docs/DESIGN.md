@@ -184,12 +184,45 @@ Windows 客户端的 wintun.dll 属 WireGuard LLC **Prebuilt Binaries 专有许�
   无需提权, 面板+托盘双入口)**、连接/网卡/设备状态、当日用量、日志末尾、邀请码注册向导。
 - **底层分层**: GUI 只做壳, 一切管理能力走 `orbit-cli` 子命令层:
   - `status`(连接/模式/出口/自启/日志/设备/用量汇总 JSON, 供 GUI 直接渲染);
-  - `set`(mode/egress/exit/keep-local 落盘 + 重启守护进程, 幂等);
-  - `autostart`(查询/开关 OrbitClient 主任务 与 OrbitClientRelink 每小时自愈);
+  - `set`(mode/egress/exit/keep-local 落盘 + 重启守护进程, 幂等; 落盘同时同步该模式的独立档);
+  - `stop`(**断开** = 杀掉全部 orbit-cli 守护进程; 隧道/虚拟网卡/路由随进程消亡由内核自动清空;
+    计划任务与配置原样保留, GUI 是独立进程不受影响, 状态回到"未连接");
+  - `switch <simple|smart|global>`(每模式独立配置切换: 各模式配置存
+    `orbit-cli-<mode>.yaml` 独立档, 切换 = 回写当前档 → 激活目标档(首次自动初始化派生) →
+    **守护在运行才重启**; 断开态切模式保持离线)。注意 Go flag 遇首个位置参数即停, 故
+    `-config` 手工扫描, 兼容 `switch global` 与 `switch global -config <path>`;
+  - `autostart`(查询/开关 OrbitClient 开机自启任务 与 OrbitClientRelink 每小时自愈;
+    **主任务已去掉 10 分钟 TimeTrigger 自愈, 仅保留 onlogon** —— 手动断开后不会被拉回,
+    彻底离线, 直到用户再点"连接"或下次登录(onlogon)自动自启);
   - `usage`(当日用量+配额)。
   - 读操作由 GUI 直接子进程调用并解析; 写操作统一经 `ShellExecute("runas")` 提权调 CLI
     (改 ProgramData 配置/重启 SYSTEM 守护/建删计划任务均需管理员)。
+- **进程模型与"断开/退出"语义**(2026-09-25 定稿):
+  - **GUI(`orbit-gui.exe`, 用户会话)与守护(`orbit-cli.exe`, SYSTEM 计划任务)
+    是两个独立进程**。杀守护绝不会让 GUI 界面消失。
+  - **断开(Disconnect)** = 停守护(经 CLI `stop`)。守护的 wintun 适配器由内核自动销毁,
+    绑定其上的路由自动清除(smart 未动过物理默认路由, 断开即恢复原网; global 被 metric
+    压住的原默认路由随 TUN 消亡自动回落)。GUI 保留、显示"未连接", 可改配置再点"连接";
+    之后不会再被拉起(主任务无 TimeTrigger)。
+  - **退出(Exit)** = 停守护 + 关闭 GUI(托盘消失), 彻底离线。
+  - GUI 主按钮为两态"连接/断开": 已连接时禁用模式/出口/egress/规则/keep_local/自启控件
+    (断开后方可改); 托盘快速切模式走 `switch <mode>`。
 - **打包**: `build-orbit-win.sh` 产出 zip 含 `orbit-gui.exe`(windowsgui 子系统)+ 新
+- **交互修复: 连接/断开一次点击即生效**(2026-09-25 v7, 双击问题根因与对策):
+  - `ShellExecute("runas")` 是异步的: 返回时提权子进程(set/stop)刚被拉起,
+    落定(taskkill + wintun 清场 + 守护重拨号建网卡)需 2-4s。旧版固定 sleep
+    1600/1400ms 后单次刷新, 状态尚未收敛 -> 按钮文字不变 -> 用户以为没点中再点一次。
+  - 对策: 提权子进程返回后 **轮询 status 直至收敛**(连接等 `daemon_running==true`,
+    断开等 `false`, 连接 25s/断开 15s 超时兜底), 期间禁用主按钮并显示"正在连接/断开",
+    不再吞点击; 成功后清本地规则 dirty 标记再同步。
+  - 轮询用独立只读 status 解析(不写 `g.status`), 避免与 UI 线程渲染竞态。
+- **smart 规则 UI: 逐行表格**(2026-09-25 v7, 弃 TextEdit 与 TableView):
+  - walk TableView 单元格无法放按钮, 改动态逐行 Composite(目标 Label | "→ 出口" Label |
+    删除按钮)放进 VBox 容器; 空态显示占位文案。
+  - 添加走弹窗: 目标 LineEdit + 出口 ComboBox(默认出口 + egress 设备), 仅接受 IP/CIDR
+    (`net.ParseIP`/`ParseCIDR` 校验, 域名拒绝并提示), 同目标+出口去重;
+    未提交的增删保存在面板缓存 `rules`/`rulesDirty`, 不被 status 同步覆盖,
+    连接(set)成功落盘后清 dirty 释放。
   `orbit-cli.exe`; 老用户把新版 CLI 覆盖到 `C:\ProgramData\OrbitClient\` 后即可用 GUI。
 - **构建注意**: GUI 目录不在公开仓(FOSS 发布只含内核+CLI); 构建前需用
   `rsrc` 从 `app.manifest`+`assets/orbit.ico` 生成 `rsrc_windows.syso`——
